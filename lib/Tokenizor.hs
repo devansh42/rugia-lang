@@ -9,7 +9,9 @@ import Numeric (readHex,readOct,readBin, readFloat)
 data Token = Plus  |  Minus
  | Mul | Divide | CommentHash | Assign | Eq
  | Not | NotEq | LTH | GTH | LTEQ | GTEQ | Mod | SemiColon | LeftParen | RightParen
- | LeftBrace | RightBrace |  WhiteSpace
+ | LeftBrace | RightBrace   
+ | LeftSupScript | RightSupScript
+ | WhiteSpace
  | Comma | Colon | FullStop
  | NewAssign
  | BitwiseAND | BitwiseOR
@@ -44,6 +46,8 @@ operator = do
         ")" -> RightParen
         "{" -> LeftBrace
         "}" -> RightBrace
+        "[" -> LeftSupScript 
+        "]" -> RightSupScript
         "<<" -> LeftShift
         "<=" -> LTEQ
         "<" -> LTH
@@ -59,7 +63,7 @@ operator = do
         "||" -> CondOR
         "|" -> BitwiseOR
         "^" -> BitwiseXOR
-    where ar = fmap (try.string)  [".",",",":=",":","+","-","*","%",";","/","(",")","{","}","<<","<=","<",">>",">=",">","==","=","!=","!","&&","&","||","|","^"]
+    where ar = fmap (try.string)  [".",",",":=",":","+","-","*","%",";","/","(",")","{","}","[","]", "<<","<=","<",">>",">=",">","==","=","!=","!","&&","&","||","|","^"]
     -- we are using try because string combinator does backtrace in case of failure
 
 
