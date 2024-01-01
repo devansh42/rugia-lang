@@ -1,15 +1,19 @@
+-- Tokenizor contains primitives for tokenizing code
+{-# LANGUAGE InstanceSigs #-}
 module Tokenizor(Token(..),tokenParser) where
 
-import Text.Parsec.Char (char, oneOf,endOfLine,anyChar,string,digit,spaces,space,letter,octDigit, hexDigit)
-import Text.Parsec (manyTill,try,choice,many1,(<|>), many,option,eof,count, unexpected  )
+
+import Text.Parsec.Char (char, oneOf,endOfLine,anyChar,string,digit,spaces,space,letter,octDigit, hexDigit, newline)
+import Text.Parsec (manyTill,try,choice,many1,(<|>), many,option,eof,count, unexpected, skipMany1  )
 import Text.Parsec.String (Parser)
 import Data.Int (Int32)
 import Numeric (readHex,readOct,readBin, readFloat)
+import Control.Monad (void)
 
-data Token = Plus  |  Minus
+data Token = OptionalToken |  Plus  |  Minus
  | Mul | Divide | CommentHash | Assign | Eq
- | Not | NotEq | LTH | GTH | LTEQ | GTEQ | Mod | SemiColon | LeftParen | RightParen
- | LeftBrace | RightBrace   
+ | Not | NotEq | LTH | GTH | LTEQ | GTEQ | Mod | SemiColon |EOL| LeftParen | RightParen
+ | LeftBrace | RightBrace
  | LeftSupScript | RightSupScript
  | WhiteSpace
  | Comma | Colon | FullStop
@@ -46,7 +50,7 @@ operator = do
         ")" -> RightParen
         "{" -> LeftBrace
         "}" -> RightBrace
-        "[" -> LeftSupScript 
+        "[" -> LeftSupScript
         "]" -> RightSupScript
         "<<" -> LeftShift
         "<=" -> LTEQ
@@ -78,7 +82,7 @@ letter_ = letter <|> char '_'
 -- identifierOrkeyword parses an identifier or keyword
 identifierOrkeyword :: Parser Token
 identifierOrkeyword = do
-    prefix <- letter
+    prefix <- letter_
     sufix <- many suffixParser
     return $ let
         name = (prefix:sufix)
@@ -110,35 +114,27 @@ integer :: Parser Token
 integer = let
 
 
-    bin_lit_ = do
-        digits <-many1 binaryDigit_
-        return $ IntLit $ retrive $ readBin digits
-
-    hex_lit_ = do
-        digits <- many1 hexDigit
-        return $ IntLit $ retrive $ readHex digits
-
-    oct_lit_ = do
-        digits <- many1 octDigit
-        return $ IntLit $ retrive $ readOct digits
+    bin_lit_ = lit_ binaryDigit_ readBin
+    hex_lit_ = lit_ hexDigit readHex
+    oct_lit_ = lit_ octDigit readOct
+    lit_ prs red = IntLit . retrive . red <$> many1 prs
 
     num = do
         d <- digit
-        if d == '0' then do 
+        if d == '0' then do
             -- following literal can be octal, binary or hexadecimal
             -- lets try to look for octal digits without prefix 'o' or 'O'
             oct_digits <- many octDigit
-            if not (null oct_digits) then return $ IntLit $ retrive $ readOct oct_digits
-            else do
+            if not (null oct_digits) then  return $ IntLit $ retrive $ readOct oct_digits
+            else
                 -- check for hexa, binary and octal literal
                 -- we are using option parser as there might be nothing to parse ahead
                 -- and 0 is the value
-                f <- option '0' $ oneOf "bBoOxX"
-                non_decimal_literal f 
+                (oneOf "bBoOxX" <|> return '0') >>=non_decimal_literal
         else do
             suf <-  many digit
             return $ IntLit $ read (d:suf)
-    
+
     non_decimal_literal l = case l of
 
         'b' -> bin_lit_
@@ -185,16 +181,16 @@ float = let
 
     with_intregal_ = do
         digits <- many1 digit
-        x <- option '0' $ char '.'  
+        x <- option '0' $ char '.'
         case x of
                 '.' -> do
-                        y <-  fractional_  
+                        y <-  fractional_
                         return $ FloatLit $ retrive $ readFloat $ digits ++ "." ++ if not (null y) then y else "0"
-                _ -> do 
-                    y <- option [] decimal_exponent_   
+                _ -> do
+                    y <- option [] decimal_exponent_
                     case y of
-                        [] -> unexpected "need to be parsed as integer" 
-                        _ -> return $ FloatLit $ retrive $ readFloat $ digits ++ y 
+                        [] -> unexpected "need to be parsed as integer"
+                        _ -> return $ FloatLit $ retrive $ readFloat $ digits ++ y
 
 
     float_lit_ = do
@@ -204,29 +200,29 @@ float = let
             '.' -> no_intregal_
             _ -> try with_intregal_ -- we have applied "try" as there is a possibility of having an integer 
 
-    in float_lit_ 
+    in float_lit_
 
 
 runeLit_ :: Parser Int32
 runeLit_ = let
 
-    retrive [(x,_)] = x 
+    retrive [(x,_)] = x
 
     rune_lit__ :: Parser Int32
     rune_lit__ = do
         _ <- char '\\'
         y <- option '0' $ oneOf "abfnrtvuUx\\'\""
         case escaped_char y of
-            0 -> 
-                case y of  
-                    'U' -> big_u_val 
-                    'u' -> little_u_val 
-                    'x' -> hex_byte_val 
-                    _ -> oct_byte_val 
+            0 ->
+                case y of
+                    'U' -> big_u_val
+                    'u' -> little_u_val
+                    'x' -> hex_byte_val
+                    _ -> oct_byte_val
             _ -> return $ escaped_char y
 
     escaped_char :: Char -> Int32
-    escaped_char n = 
+    escaped_char n =
             case n of
                 'a' -> 0x7
                 'b' -> 0x8
@@ -243,7 +239,7 @@ runeLit_ = let
 
     big_u_val = do
         d <- count 8 hexDigit
-        return $ retrive $ readHex d 
+        return $ retrive $ readHex d
 
     little_u_val = do
         d <- count 4 hexDigit
@@ -261,64 +257,40 @@ runeLit_ = let
         x <- anyChar
         return ( fromIntegral (fromEnum x) :: Int32)
     in rune_lit__ <|> unicode_char
-    
+
 rune :: Parser Token
-rune = do
-        _ <- char '\''
-        x <- runeLit_   
-        _ <- char '\''
-        return $ RuneLit x
+rune = RuneLit <$> ( char '\'' >> runeLit_ <* char '\'' )
 
 str :: Parser Token
 str = let
     toInt32 n = fromIntegral (fromEnum n) :: Int32
-
-    raw_str :: Parser Token
-    raw_str = do
-        lit <- manyTill anyChar $ char '`' 
-        return $ StringLit $ fmap toInt32 lit 
-
-    interpreted_str :: Parser Token
-    interpreted_str = do
-        lit <- manyTill runeLit_ $ char '"'
-        return $ StringLit $ fmap toInt32 lit 
-
-    in do 
-        x <- oneOf "`\""
-        case x of
-            '`' ->  raw_str 
-            _ -> interpreted_str 
-
+    raw_str = StringLit . (toInt32 <$>)  <$>  manyTill anyChar ( char '`')
+    interpreted_str = StringLit . (toInt32 <$>) <$> manyTill runeLit_ ( char '"')
+    in ( char '`' >> raw_str) <|> (char '\"' >> interpreted_str)
 
 
 -- comment parses comments
 -- comments started with // would end at the end of line
 -- comments started with /* would end at */ 
 comment :: Parser Token
-comment = do
-    _ <- char '/'
-    x <- oneOf "/*"
-    _ <- case x of
-            '/' -> manyTill anyChar endOfComment  
-            _ -> manyTill anyChar $ try $ string "*/"
-    return Comment
-    where endOfComment = do
-            x <- option '0' endOfLine
-            case x of
-                        '0' -> eof *> return '\n'
-                        _ -> return '\n'  
+comment = char '/' >>
+    ((char '/' >> manyTill anyChar endOfComment) <|> (char '*' >> manyTill anyChar (try $ string "*/"))) >> return Comment
+    where endOfComment = (el <|> eof) >> return '\n'
+          el = void endOfLine
+
 -- whiteSpace parses white space
 whiteSpace :: Parser Token
-whiteSpace = do
-    space
-    spaces
-    return WhiteSpace
+whiteSpace = skipMany1 space >> return WhiteSpace
 
+
+eol :: Parser Token
+eol = skipMany1 endOfLine >> return EOL
 
 tokenParser :: Parser [Token]
 tokenParser = let
     -- Note: Order of these parsers really matters
     parser_combinator = choice [
+        eol,
         whiteSpace,
         comment,
         rune,
@@ -327,10 +299,32 @@ tokenParser = let
         integer,
         identifierOrkeyword,
         operator]
-    exculder x = case x of
-        Comment -> False
-        WhiteSpace -> False
-        _ -> True
-    in do 
-        tokens <- manyTill parser_combinator eof  
-        return $ filter exculder tokens 
+
+    -- addSemicolons adds semicolons as per Golang Spec
+    addSemicolons [] = []
+    addSemicolons [WhiteSpace] = []
+    addSemicolons [Comment] = []
+    addSemicolons [x] = [x]
+    addSemicolons (WhiteSpace:tail_) = addSemicolons tail_
+    addSemicolons (Comment:tail_) = addSemicolons tail_
+    addSemicolons (EOL:EOL:tail_) = addSemicolons tail_
+    addSemicolons (SemiColon:SemiColon:tail_) = addSemicolons $ SemiColon : tail_ -- merging semicolons incase user has already put an semicolon
+    addSemicolons (x:EOL:tail_) = case x of
+            Identifier _  -> fn
+            IntLit _ -> fn
+            RuneLit _ -> fn
+            FloatLit _ -> fn
+            StringLit _ -> fn
+            Break  -> fn
+            Continue -> fn
+            Return -> fn
+            RightBrace -> fn
+            RightSupScript -> fn
+            RightParen -> fn
+            _ -> x : addSemicolons tail_
+        where
+        fn = x : SemiColon : addSemicolons tail_
+    addSemicolons (x:tail_) = x : addSemicolons tail_
+    in do
+        tokens <- manyTill parser_combinator eof
+        return $ addSemicolons  tokens ++ [EOL]
