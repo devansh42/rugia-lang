@@ -1,19 +1,31 @@
 module Expression where
-import AST (ASTBuilder, identifierToken,oneOfTokens,token,Expr (NilExpr,PrimaryExpr,KeyedExpr,Slice,Index, Selector, VaridicArg,CallArgs, MethodExpr, ConversionExpr, BasicLit, OperandName, CompositeExpr, BinaryExpr, FunctionLit), TypeInfo (StructType), intToken, floatToken, strToken, runeToken, BodyParser)
+import AST (ASTBuilder, identifierToken,oneOfTokens,token,Expr (NilExpr,PrimaryExpr,KeyedExpr,Slice,Index, Selector, VaridicArg,CallArgs, MethodExpr, ConversionExpr, BasicLit, OperandName, CompositeExpr, BinaryExpr, FunctionLit), TypeInfo (StructType), intToken, floatToken, strToken, runeToken, BodyParser, getIden, Stmt (NilStmt))
 import Tokenizor (Token (FullStop, LeftSupScript,Comma, Colon, OptionalToken, RightSupScript, Identifier, LeftParen, RightParen, RightBrace, LeftBrace, IntLit, FloatLit, StringLit, RuneLit, Struct, Map, Plus, Minus, Not, Mul, Divide, Mod, LeftShift, RightShift, BitwiseOR, BitwiseXOR, Eq, NotEq, LTEQ, GTEQ, LTH, GTH, CondAND, CondOR))
-import Text.Parsec (option,try,many, lookAhead, count,choice,(<|>))
+import Text.Parsec (option,try,many, lookAhead, count,choice,(<?>),(<|>), unexpected)
 import Types (singleTypeDecl, typeName, structType, sliceType, mapType,  funcType)
-
+import Debug.Trace ( trace,traceStack)
+import Control.Monad (when)
 expr:: BodyParser -> ASTBuilder Expr
-expr funcBody =  try (unaryExpr funcBody) <|> orOperator funcBody
+expr funcBody =   traceStack "evaluating expr"  try $ orOperator funcBody
 
 -- ExpressionList = Expression { "," Expression } .
 exprList :: BodyParser -> ASTBuilder [Expr]
-exprList funcBody = do
+exprList funcBody = trace "evaluating exprList" $ do
     e1 <- expr funcBody
     es <- many commaExpr
     return (e1 : es)
-    where commaExpr = token Comma >> expr funcBody
+    where commaExpr = traceStack "checking for comma seperation" token Comma >> expr funcBody
+
+-- UnaryExpr  = PrimaryExpr | unary_op UnaryExpr .
+unaryExpr :: BodyParser -> ASTBuilder Expr
+unaryExpr funcBody = let
+    unaryOps = [Plus,Minus,Not,BitwiseXOR]
+    unary = do
+        t <- oneOfTokens unaryOps
+        uexpr <- unaryExpr funcBody
+        return $ BinaryExpr uexpr t NilExpr
+    in trace "evaluating unaryExpr" (primaryExpr funcBody <|> unary)
+
 
 -- PrimaryExpr =
 -- 	Operand |
@@ -28,13 +40,13 @@ primaryExpr funcBody= let
     si = sliceOrIndex funcBody
     arg = arguments funcBody
     pe x = do
-        y <- primaryExpr funcBody
+        y <-  primaryExpr funcBody
         PrimaryExpr y <$> x
-    in choice $ try <$> [operand funcBody, conversion funcBody,methodExpr,pe selector,pe si ,pe arg ]
+    in trace "entering primaryExpr" choice $ try <$> [ operand funcBody, conversion funcBody,methodExpr,pe selector,pe si ,pe arg ]
 
 -- Selector       = "." identifier .
 selector :: ASTBuilder Expr
-selector = token FullStop >> do
+selector = trace "evaluating selector" token FullStop >> do
     (Identifier x) <- identifierToken
     return $ Selector x
 
@@ -43,7 +55,7 @@ selector = token FullStop >> do
 -- Index          = "[" Expression [ "," ] "]" .
 -- Slice          = "[" [ Expression ] ":" [ Expression ] "]" 
 sliceOrIndex :: BodyParser -> ASTBuilder Expr
-sliceOrIndex funcBody= token LeftSupScript >> do
+sliceOrIndex funcBody= trace "evaluating sliceOrIndex" token LeftSupScript >> do
     ex <- optionalExpr
     case ex of
         NilExpr -> token Colon >> Slice ex <$> optionalExpr -- found to be slice
@@ -64,7 +76,7 @@ sliceOrIndex funcBody= token LeftSupScript >> do
 
 -- Arguments      = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
 arguments :: BodyParser -> ASTBuilder Expr
-arguments funcBody = token LeftParen >> do
+arguments funcBody = trace "evaluting arguments" token LeftParen >> do
     tok <- option OptionalToken $ lookAhead $ token RightParen
     case tok of
         RightParen -> do
@@ -94,46 +106,37 @@ receiverType = singleTypeDecl
 
 -- MethodExpr    = ReceiverType "." MethodName .
 methodExpr :: ASTBuilder Expr
-methodExpr = do
-    typ <- receiverType
-    _ <- token FullStop
-    (Identifier name) <- methodName
-    return $ MethodExpr typ name
+methodExpr = trace "evaluating methodExpr"  (receiverType <* token FullStop) >>= (<$> (getIden <$> methodName)) . MethodExpr
 
 -- Conversion = Type "(" Expression ")" .
 conversion :: BodyParser -> ASTBuilder Expr
-conversion funcBody = do
-    typ <- singleTypeDecl
-    ex <- token LeftBrace >> expr funcBody
-    _ <- token RightBrace
-    return $ ConversionExpr typ ex
+conversion funcBody = trace "evaluating conversion" singleTypeDecl >>= (<$> parser) . ConversionExpr
+    where parser = token LeftBrace >> expr funcBody <* token RightBrace
 
 
 -- Operand     = Literal | OperandName | "(" Expression ")" .
 operand :: BodyParser -> ASTBuilder Expr
 operand funcBody = let
-    optionalExpr =  token LeftParen >> do
-        ex <- expr funcBody
-        token RightParen >> return ex
-    in optionalExpr <|> try (literal  funcBody) <|> operandName
+    optionalExpr =  token LeftParen >> expr funcBody <* token RightParen
+    in trace "evaluating operand"  try (literal  funcBody) <|> operandName <|> optionalExpr
 
 -- Literal     = BasicLit | CompositeLit | FunctionLit  .
 literal :: BodyParser -> ASTBuilder Expr
-literal funcBody = basicLit <|> compositeLit funcBody <|> functionLit funcBody
+literal funcBody = trace "evaluting literal" (basicLit <|> functionLit funcBody <|> try (compositeLit funcBody) )
 
 
 -- BasicLit    = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
 basicLit :: ASTBuilder Expr
-basicLit =  BasicLit <$>  choice [intToken,floatToken,strToken,runeToken]
+basicLit =  trace "evaluating basicLit" $ BasicLit <$>  choice [intToken,floatToken,strToken,runeToken]
 
 
 -- FunctionLit = "func" Signature FunctionBody .
 functionLit :: BodyParser ->  ASTBuilder Expr
-functionLit funcBody = funcType >>= (<$> funcBody) . FunctionLit
+functionLit funcBody = trace "evaluting functionLit"  funcType >>= (<$> funcBody) . FunctionLit
 
 -- OperandName = identifier | QualifiedIdent .
 operandName :: ASTBuilder Expr
-operandName = do
+operandName = trace "evaluating operandName" $ do
     (Identifier n) <- identifierToken
     x <- option OptionalToken $ token FullStop
     case x of
@@ -146,13 +149,13 @@ operandName = do
 
 -- CompositeLit  = LiteralType LiteralValue .
 compositeLit :: BodyParser -> ASTBuilder Expr
-compositeLit funcBody = do
-    lt <- literalType
-    CompositeExpr lt <$> literalVal funcBody
+compositeLit funcBody = trace "evaluting compositeLit" $ do
+    lt <- trace "going for this" literalType
+    CompositeExpr lt <$> literalVal funcBody <* unexpected "done eval compositeLit"
 
 -- LiteralType   = StructType | SliceType | MapType | TypeName .
 literalType :: ASTBuilder TypeInfo
-literalType = do
+literalType = trace "evaluating literalType" $ do
     x <- lookAhead $ choice [oneOfTokens [Struct,LeftSupScript,Map],typeName ]
     case x of
         Struct -> structType
@@ -163,51 +166,36 @@ literalType = do
 
 -- LiteralValue  = "{" [ ElementList [ "," ] ] "}" .
 literalVal :: BodyParser -> ASTBuilder [Expr]
-literalVal funcBody = token LeftBrace >> do
-    eles <- elementList funcBody
-    token RightBrace >> return eles
-
+literalVal funcBody = trace "evaluating literalVal" token LeftBrace >>
+     (( elemList <* token RightBrace) <|> (token RightBrace >> return []))
+    where elemList = elementList funcBody 
 -- Element       = Expression | LiteralValue .
 element :: BodyParser -> ASTBuilder [Expr]
-element funcBody = literalVal funcBody <|> (:[]) <$> expr funcBody
+element funcBody = trace "evaluating element" literalVal funcBody <|> (:[]) <$> expr funcBody
 
 
 -- Key           = FieldName | Expression | LiteralValue .
 key :: BodyParser -> ASTBuilder [Expr]
-key = element   -- we are not doing any special arrangements for fieldName as expr would take care of that
+key = trace "evaluating key" element   -- we are not doing any special arrangements for fieldName as expr would take care of that
 
 -- KeyedElement  = [ Key ":" ] Element .
 keyedElement :: BodyParser -> ASTBuilder [Expr]
-keyedElement funcBody = do
+keyedElement funcBody = trace "evaluting keyedElement" $ do
     k <- key funcBody -- although key is optional but parser is same for key and element 
-    (token Colon >> (:[]) . KeyedExpr k <$> element funcBody ) <|> return [KeyedExpr [] k]
+    ( trace "about to consume keyedElement Colon" token Colon >> trace "eval keyedExpr" (:[]) . KeyedExpr k <$> element funcBody ) <|> return [KeyedExpr [] k]
 
 -- ElementList   = KeyedElement { "," KeyedElement } .
 elementList :: BodyParser -> ASTBuilder [Expr]
-elementList funcBody = do
+elementList funcBody = trace "evaluating elementList" $ do
     ke <- keyedElement funcBody
     kes <- many withComma
     return $ ke ++ concat kes
     where withComma = token Comma >> keyedElement funcBody
 
-
--- UnaryExpr  = PrimaryExpr | unary_op UnaryExpr .
-unaryExpr :: BodyParser -> ASTBuilder Expr
-unaryExpr funcBody = let
-    unaryOps = [Plus,Minus,Not,BitwiseXOR]
-    unary = do
-        bt <- BinaryExpr <$> oneOfTokens unaryOps
-        u <- bt <$> unaryExpr funcBody
-        return $ u NilExpr
-    in unary <|> primaryExpr funcBody
-
 binaryOperator :: ASTBuilder Expr -> [Token] -> ASTBuilder Expr
-binaryOperator srcExprType ts = do
+binaryOperator srcExprType ts = trace "evaluating binaryOperator" $  do
     e1 <- srcExprType
-    t <- option OptionalToken $ oneOfTokens ts
-    case t of
-        OptionalToken -> return e1
-        _ -> BinaryExpr t e1 <$> binaryOperator srcExprType ts
+    (oneOfTokens ts >>= (<$> binaryOperator srcExprType ts ) .BinaryExpr e1) <|> return e1
 
 -- Below parsers are defined to manage precedence order in binary expressions
 mulOperator :: BodyParser ->ASTBuilder Expr
@@ -223,4 +211,4 @@ andOperator :: BodyParser ->ASTBuilder Expr
 andOperator funcBody = binaryOperator (relOperator funcBody) [CondAND]
 
 orOperator :: BodyParser -> ASTBuilder Expr
-orOperator funcBody = binaryOperator (andOperator funcBody) [CondOR]
+orOperator funcBody = trace "eval orOperator"  binaryOperator (andOperator funcBody) [CondOR]

@@ -1,6 +1,6 @@
 module Declaration (topLevelDecl,shortVarDecl,decl) where
 
-
+import Debug.Trace (trace)
 import Tokenizor
     ( Token(RightParen, SemiColon,Assign, Type, OptionalToken, LeftParen, Identifier, Const, RightBrace, Var, NewAssign, Func) )
 import AST ( ASTBuilder, token,Block, Declaration (ConstDecl,VarDecl,FuncDecl, MethodDecl), TypeInfo (InvalidTypeInfo), identifierToken, BodyParser, Stmt (DeclStmt) )
@@ -13,7 +13,7 @@ import GHC.Generics (DecidedStrictness(DecidedLazy))
 
 -- TopLevelDecl   = ConstDecl | TypeDecl | FunctionDecl | MethodDecl   .
 topLevelDecl :: BodyParser -> ASTBuilder [Declaration]
-topLevelDecl funcBody= choice [constDecl funcBody,typeDecl ] <|>  (:[]) <$> choice  [try $ methodDecl funcBody ,funcDecl funcBody ]
+topLevelDecl funcBody= choice [constDecl funcBody,typeDecl ] <|>  (:[]) <$>   choice  [try $ methodDecl funcBody ,funcDecl funcBody ]
 
 -- Declaration   = ConstDecl | TypeDecl | VarDecl .
 decl :: BodyParser -> ASTBuilder Stmt 
@@ -56,7 +56,7 @@ varDecl funcBody = let
         return $ mapper typ <$> zip idens es
         where exprs = token Assign >> exprList funcBody
               mapper t (Identifier x, y) = VarDecl x t y
-    in multipleDecl Var varSpec
+    in trace "eval varDecl"  multipleDecl Var varSpec
 
 
 -- ShortVarDecl = IdentifierList ":=" ExpressionList .
@@ -72,7 +72,7 @@ shortVarDecl funcBody = do
 -- FunctionName = identifier .
 -- FunctionBody = Block .
 funcDecl :: BodyParser -> ASTBuilder Declaration
-funcDecl funcBody= token Func >>
+funcDecl funcBody= trace "eval funcDecl" token Func >>
  (identifierToken >>= (<$> funcSignature) . FuncDecl . name  >>= (<$> optionalBlock funcBody))
 
 optionalBlock:: BodyParser ->  ASTBuilder Block

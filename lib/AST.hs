@@ -1,4 +1,5 @@
-module AST(AST(..),Expr(..),Block,listParser,emptyString,TypeInfo(..),Stmt(..),Declaration(..),ASTBuilder,
+{-# LANGUAGE InstanceSigs #-}
+module AST(AST(..),Expr(..),getIden,Block,listParser,emptyString,TypeInfo(..),Stmt(..),Declaration(..),ASTBuilder,
 identifierToken,
 runeToken,
 strToken,
@@ -8,9 +9,10 @@ oneOfTokens,
 drainTokens,
 BodyParser,
 token) where
-import Tokenizor (Token (Identifier,RuneLit,StringLit,IntLit,FloatLit, Struct), tokenParser)
+import Tokenizor (Token (Identifier,RuneLit,StringLit,IntLit,FloatLit, Struct),TokenPos(TokenPos), tokenParser)
 import Text.Parsec (Parsec,tokenPrim, incSourceColumn,SourcePos,(<?>), many)
 import Data.Int (Int32)
+import Debug.Trace (trace)
 
 data TypeInfo = InvalidTypeInfo
  |  TypeInfo String 
@@ -27,7 +29,7 @@ data Declaration = AliasDecl String TypeInfo -- type x = y
  | MethodDecl Declaration String TypeInfo Block    
  | AnonymousDecl TypeInfo deriving (Show) -- for functions like func(int,int) int 
 
-data AST = SourceFile [Declaration]
+data AST = SourceFile [Declaration] deriving Show
 
 data Expr = NilExpr | Selector String  -- obj.color 
     | Slice Expr Expr -- ar[1+2:4+5]
@@ -42,7 +44,7 @@ data Expr = NilExpr | Selector String  -- obj.color
     | CompositeExpr TypeInfo [Expr] -- []int{1,2+8,3-3}
     | KeyedExpr [Expr] [Expr] -- {1:2}, {1,2} (left expr would be nil), {a:1}
     | PrimaryExpr Expr Expr -- f(3.1415, true), leftExpr = f, rightExpr = (3.1415, true)
-    | BinaryExpr Token Expr Expr deriving (Show)
+    | BinaryExpr Expr Token Expr deriving (Show)
 
 
 emptyString :: String
@@ -65,22 +67,28 @@ data Stmt = NilStmt
     | WhileStmt Expr Block -- WhileStmt ConditionExpression Block
     | ForRangeStmt [Expr] Token Expr Block -- ForRangeStmt AssigneesExpr AssignmentOperator(:= | =) IterableExpr Block
     | ForStmt Stmt Expr Stmt Block   -- ForStmt InitExpr ConditionExpr PostExpr Block
-    | DeclStmt [Declaration] deriving Show
+    | DeclStmt [Declaration]  deriving Show 
+
+-- instance Show Stmt where
+--     show :: Stmt -> String
+--     show = showDepth 0  
 
 
 
 
-type ASTBuilder = Parsec [Token] ()
+type ASTBuilder = Parsec [TokenPos] ()
 
 
-updatePosToken :: SourcePos -> SourcePos
-updatePosToken pos = incSourceColumn pos 1
+_updatePosToken :: SourcePos -> TokenPos -> [TokenPos] -> SourcePos
+_updatePosToken _ (TokenPos _ _ ep) [] = ep  
+_updatePosToken _ _ ((TokenPos _ sp _):_) = sp  
 
 satisfyToken :: (Token -> Bool) -> ASTBuilder Token
-satisfyToken f = tokenPrim (\c -> show [c])
-                                (\pos _c _cs -> updatePosToken pos)
-                                (\c -> if f c then Just c else Nothing)
+satisfyToken f = tokenPrim (\c -> show [c]) _updatePosToken (_checkToken f)
+                            
 
+_checkToken :: (Token -> Bool) -> TokenPos -> Maybe Token
+_checkToken f (TokenPos c _ _) = trace ("eval token: "++ show c) $ if f c then Just c else Nothing
 
 oneOfTokens :: [Token] -> ASTBuilder Token
 oneOfTokens ts = satisfyToken (elem_ ts)
@@ -90,7 +98,7 @@ elem_ tail_ t
   = foldr (\ head_ -> (||) (sameToken_ head_ t)) False tail_
 
 token :: Token -> ASTBuilder Token
-token t = satisfyToken (sameToken_ t) <?> show [t]
+token t =  satisfyToken (sameToken_ t) <?> show [t]
 
 
 identifierToken :: ASTBuilder Token
@@ -101,7 +109,7 @@ identifierToken = do
 runeToken :: ASTBuilder Token
 runeToken = do
     token run
-    where run = RuneLit 0
+    where run = RuneLit '0'
 
 strToken :: ASTBuilder Token
 strToken = do
@@ -139,5 +147,6 @@ listParser parser seperator = do
     where optionList = token seperator >> parser 
     
 
-
+getIden :: Token -> String
+getIden (Identifier n) = n
     

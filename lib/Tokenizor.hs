@@ -1,14 +1,22 @@
 -- Tokenizor contains primitives for tokenizing code
 {-# LANGUAGE InstanceSigs #-}
-module Tokenizor(Token(..),tokenParser) where
+module Tokenizor(Token(..),TokenPos(..),showTokens,showTokenPos,tokenParser) where
 
 
 import Text.Parsec.Char (char, oneOf,endOfLine,anyChar,string,digit,spaces,space,letter,octDigit, hexDigit, newline)
-import Text.Parsec (manyTill,try,choice,many1,(<|>), many,option,eof,count, unexpected, skipMany1  )
+import Text.Parsec (manyTill,try,getPosition,choice,many1,(<|>), many,option,eof,count, unexpected, skipMany1, SourcePos, incSourceColumn, sourceLine, sourceColumn  )
 import Text.Parsec.String (Parser)
 import Data.Int (Int32)
 import Numeric (readHex,readOct,readBin, readFloat)
 import Control.Monad (void)
+import Data.Char (chr)
+
+
+data TokenPos = TokenPos Token SourcePos SourcePos
+
+instance Show TokenPos where
+    show :: TokenPos -> String
+    show (TokenPos tk pos _) = "(" ++ show tk ++ " L:" ++ show (sourceLine pos) ++ " C:"++show (sourceColumn pos) ++")"
 
 data Token = OptionalToken |  Plus  |  Minus
  | Mul | Divide | CommentHash | Assign | Eq
@@ -24,11 +32,26 @@ data Token = OptionalToken |  Plus  |  Minus
  | Break | Case | Const | Continue | Default | Else | For | Func | Goto | If
  | Import | Map | Package | Range | Return | Struct | Switch | Type | Var
  | LeftShift | RightShift | Comment | Identifier String
- | RuneLit Int32
- | StringLit [Int32]
+ | RuneLit Char
+ | StringLit String
  | IntLit Integer | FloatLit Double deriving (Show,Eq)
 
 
+
+showTokens :: [Token] -> String
+showTokens (SemiColon: xs) = show SemiColon ++ ['\n'] ++ showTokens xs
+showTokens (EOL:tokens) = show EOL ++ ['\n'] ++ showTokens tokens
+
+showTokens (t:tokens) = show t ++ ", " ++ showTokens tokens
+showTokens [] = ""
+
+showTokenPos :: [TokenPos] -> String
+showTokenPos [] = ""
+showTokenPos (TokenPos tk p1 ep1: TokenPos tk2 p2 ep2 : tail_  ) = show (TokenPos tk p1 ep1)
+    ++ (if sourceLine p1 == sourceLine p2
+        then ""
+        else "\n") ++ showTokenPos (TokenPos tk2 p2 ep2 :tail_)
+showTokenPos (h:tail_) = show h ++ showTokenPos tail_
 
 
 -- operator parses an operator
@@ -203,12 +226,12 @@ float = let
     in float_lit_
 
 
-runeLit_ :: Parser Int32
+runeLit_ :: Parser Char
 runeLit_ = let
 
-    retrive [(x,_)] = x
+    retrive [(x,_)] = chr x
 
-    rune_lit__ :: Parser Int32
+    rune_lit__ :: Parser Char
     rune_lit__ = do
         _ <- char '\\'
         y <- option '0' $ oneOf "abfnrtvuUx\\'\""
@@ -219,7 +242,7 @@ runeLit_ = let
                     'u' -> little_u_val
                     'x' -> hex_byte_val
                     _ -> oct_byte_val
-            _ -> return $ escaped_char y
+            _ -> return y
 
     escaped_char :: Char -> Int32
     escaped_char n =
@@ -252,10 +275,8 @@ runeLit_ = let
         d <- count 3 octDigit
         return $ retrive $ readOct d
 
-    unicode_char :: Parser Int32
-    unicode_char = do
-        x <- anyChar
-        return ( fromIntegral (fromEnum x) :: Int32)
+    unicode_char :: Parser Char
+    unicode_char = anyChar
     in rune_lit__ <|> unicode_char
 
 rune :: Parser Token
@@ -263,9 +284,8 @@ rune = RuneLit <$> ( char '\'' >> runeLit_ <* char '\'' )
 
 str :: Parser Token
 str = let
-    toInt32 n = fromIntegral (fromEnum n) :: Int32
-    raw_str = StringLit . (toInt32 <$>)  <$>  manyTill anyChar ( char '`')
-    interpreted_str = StringLit . (toInt32 <$>) <$> manyTill runeLit_ ( char '"')
+    raw_str = StringLit  <$>  manyTill anyChar ( char '`')
+    interpreted_str = StringLit  <$> manyTill runeLit_ ( char '"')
     in ( char '`' >> raw_str) <|> (char '\"' >> interpreted_str)
 
 
@@ -286,10 +306,18 @@ whiteSpace = skipMany1 space >> return WhiteSpace
 eol :: Parser Token
 eol = skipMany1 endOfLine >> return EOL
 
-tokenParser :: Parser [Token]
+tokenParser :: Parser [TokenPos]
 tokenParser = let
+
+    wrapperParser :: Parser Token -> Parser TokenPos
+    wrapperParser parser = do
+        startPos<-getPosition
+        res <- parser
+        TokenPos res startPos <$> getPosition
+
+
     -- Note: Order of these parsers really matters
-    parser_combinator = choice [
+    parser_combinator = wrapperParser $ choice [
         eol,
         whiteSpace,
         comment,
@@ -300,16 +328,17 @@ tokenParser = let
         identifierOrkeyword,
         operator]
 
+    getTk (TokenPos tk _ _) = tk
     -- addSemicolons adds semicolons as per Golang Spec
     addSemicolons [] = []
-    addSemicolons [WhiteSpace] = []
-    addSemicolons [Comment] = []
+    addSemicolons [TokenPos WhiteSpace _ _] = []
+    addSemicolons [TokenPos Comment _ _] = []
     addSemicolons [x] = [x]
-    addSemicolons (WhiteSpace:tail_) = addSemicolons tail_
-    addSemicolons (Comment:tail_) = addSemicolons tail_
-    addSemicolons (EOL:EOL:tail_) = addSemicolons tail_
-    addSemicolons (SemiColon:SemiColon:tail_) = addSemicolons $ SemiColon : tail_ -- merging semicolons incase user has already put an semicolon
-    addSemicolons (x:EOL:tail_) = case x of
+    addSemicolons (TokenPos WhiteSpace _ _:tail_) = addSemicolons tail_
+    addSemicolons (TokenPos Comment _ _:tail_) = addSemicolons tail_
+    addSemicolons (TokenPos EOL _ _:x:tail_) = addSemicolons (x:tail_)
+    addSemicolons (TokenPos SemiColon _ _ :TokenPos SemiColon x y:tail_) = addSemicolons $ TokenPos SemiColon x y: tail_ -- merging semicolons incase user has already put an semicolon
+    addSemicolons (x:TokenPos EOL sp ep  :tail_) = case getTk x of
             Identifier _  -> fn
             IntLit _ -> fn
             RuneLit _ -> fn
@@ -323,8 +352,14 @@ tokenParser = let
             RightParen -> fn
             _ -> x : addSemicolons tail_
         where
-        fn = x : SemiColon : addSemicolons tail_
+        fn = x : TokenPos SemiColon sp ep : addSemicolons tail_
     addSemicolons (x:tail_) = x : addSemicolons tail_
+
+    addLastSemiColon [] = []
+    addLastSemiColon [TokenPos SemiColon sp ep] = [TokenPos SemiColon sp ep]
+    addLastSemiColon [TokenPos tk sp ep] = TokenPos tk sp ep : [ TokenPos SemiColon ep $ incSourceColumn ep 1 ]
+    addLastSemiColon (x:tail_) = x: addLastSemiColon tail_
+
     in do
         tokens <- manyTill parser_combinator eof
-        return $ addSemicolons  tokens ++ [EOL]
+        return $  (addLastSemiColon . addSemicolons) tokens

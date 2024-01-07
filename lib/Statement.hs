@@ -2,8 +2,9 @@ module Statement where
 import AST (ASTBuilder,emptyString,Stmt(ExprStmt,ReturnStmt,SwitchStmt,WhileStmt, AssignmentStmt, LabelStmt, NilStmt, BreakStmt, ContinueStmt, GotoStmt, IfStmt, WhileStmt, ForStmt, ForRangeStmt),token, identifierToken, listParser, Expr (NilExpr), oneOfTokens, Block)
 import Tokenizor (Token(Assign, Return,Case,Default, Identifier,SemiColon, Colon, Break, OptionalToken, Continue, Goto, LeftBrace, RightBrace, If, Else, Switch, For, Range, NewAssign))
 import qualified Expression as Expr (expr, exprList  )
-import Text.Parsec (choice,try,option,many,(<|>))
+import Text.Parsec (choice,try,option,many,(<|>), lookAhead, unexpected)
 import Declaration (shortVarDecl,decl)
+import Debug.Trace (trace)
 
 expr :: ASTBuilder Expr
 expr = Expr.expr block
@@ -16,7 +17,7 @@ exprList = Expr.exprList block
 -- 	Block | IfStmt | SwitchStmt |  ForStmt
 
 stmt :: ASTBuilder [Stmt]
-stmt =  (:[]) <$> choice [decl block,returnStmt,labeledStmt,breakStmt,continueStmt,gotoStmt,ifStmt,switchStmt,forStmt,try simpleStmt] <|>  block  
+stmt =  trace "--eval stmt" (:[]) <$> choice [decl block,returnStmt,labeledStmt,breakStmt,continueStmt,gotoStmt,ifStmt,switchStmt,forStmt,try simpleStmt] <|>  block  
 
 -- Block = "{" StatementList "}" .
 block :: ASTBuilder Block 
@@ -26,6 +27,10 @@ block = token LeftBrace >> stmtList <* token RightBrace
 stmtList :: ASTBuilder [Stmt]
 stmtList = concat <$> many stmtL
     where stmtL = stmt <* token SemiColon 
+
+-- EmptyStmt = .
+emptyStmt :: ASTBuilder Stmt
+emptyStmt = lookAhead $ oneOfTokens [SemiColon,RightBrace] >> return NilStmt
 
 -- ExpressionStmt = Expression .
 expressionStmt :: ASTBuilder Stmt
@@ -37,7 +42,7 @@ assignmentStmt = exprList <* token Assign >>= (<$> exprList).AssignmentStmt
 
 -- SimpleStmt =  ExpressionStmt |  Assignment | ShortVarDecl .
 simpleStmt :: ASTBuilder Stmt
-simpleStmt = choice $ try <$> [expressionStmt,assignmentStmt,shortVarDecl block]
+simpleStmt = trace "eval simpleStmt" choice $ try <$> [emptyStmt, expressionStmt,assignmentStmt,shortVarDecl block]
 
 
 -- ReturnStmt = "return" [ ExpressionList ] .
@@ -88,11 +93,7 @@ ifStmt = token If >> do
     where optionalElse = token Else >> ( ((:[])  <$> ifStmt) <|> block)
 
 optionalSimpleStmt :: ASTBuilder Stmt
-optionalSimpleStmt = do
-            s <- option NilStmt $ try simpleStmt
-            case s of
-                NilStmt -> return NilStmt
-                _ -> token SemiColon >> return s
+optionalSimpleStmt = trace "eval optionalSimpleStmt" (try (simpleStmt <*  trace  "eval semicolon" token SemiColon >> unexpected "done reading semicolon")) <|> trace "didn't found simpleStmt" return NilStmt
 
 -- SwitchStmt = "switch" [ SimpleStmt ";" ] [ Expression ] "{" { ExprCaseClause } "}" .
 switchStmt :: ASTBuilder Stmt
